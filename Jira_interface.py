@@ -163,7 +163,7 @@ if __name__ == "__main__":
 # first stage issue creation in project from project reference.
 
     # connect to the old jira server parameters
-    j_old_param = ('https://tools.adidas-group.com/jiraold','risalgia','vf4vu15a')
+    j_old_param = ('https://tools.adidas-group.com/jiraold','username','password')
     # the project name shall be given as external parameter
     project = "DIT"
     # perform jira connection
@@ -195,7 +195,7 @@ if __name__ == "__main__":
         #                                   }, prefetch=True))
 
     # jira new server parameters
-    j_new_param = ('https://tools.adidas-group.com/jira','risalgia','F@r0nte17')  
+    j_new_param = ('https://tools.adidas-group.com/jira','username','password')  
     # connect to the new jira and create the issues with empty dummy values
     project = "DIT"
     # perform jira connection
