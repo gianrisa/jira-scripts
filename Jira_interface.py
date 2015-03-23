@@ -2,11 +2,13 @@
 
 __author__ = 'risalgia'
 
-from jira.client import JIRA
-import pprint
-from secret_file import secret_new, secret_old
-import time
 import re                                             
+import time
+import pprint
+
+from jira.client import JIRA
+from optparse import OptionParser
+from secret_file import secret_new, secret_old
 
 def timeit(method):
     """ This method is the time decorator """ 
@@ -43,7 +45,7 @@ def copy_components(jira_in, jira_out, project):
         try:
             comps_c.append(jira_out.create_component(str(c), project))
         except Exception as e:
-            print "Exception occurred :", e
+            print "Could not copy components :", e
     return comps_c
 
 @timeit
@@ -55,7 +57,7 @@ def copy_versions(jira_in, jira_out, project):
         try:
             vers_c.append(jira_out.create_version(str(v.name), project))
         except Exception as e:
-            print "Exception occurred :", e
+            print "Could not copy version :", e
     return vers_c
 
 @timeit
@@ -114,18 +116,18 @@ def copy_comments(jira_out, issue_in, issue_out):
     """
     comments = []
     # need to bear in mind that issues need to be update before touched !!!
-    issue_in.update()
-    issue_out.update()
+    # issue_in.update()
     try:
+        issue_out.update()
         # get the comments from the in issue then copies them to the other issue in the other jira instance
         comments = ["%s added by %s"%(comment.body, comment.author.emailAddress) for comment in issue_in.fields.comment.comments]
         # Add a comment to the issue.
-    except:
+    except Exception as e:
         # no comment
+        print "Could not get comments :", issue_in.key, e
         comments = []
     for c in comments:
         jira_out.add_comment(issue_out, str(clean(c)))
-
 
 @timeit
 def get_attachments(jira_in, issue_in):
@@ -134,7 +136,7 @@ def get_attachments(jira_in, issue_in):
     """ 
     path = r"C:\TEMP\%s"
     # remember to update the issue before touch it !!!
-    issue_in.update()
+    # issue_in.update()
     filelist = []
     try:
         attachments = issue_in.fields.attachment
@@ -146,7 +148,8 @@ def get_attachments(jira_in, issue_in):
                         f.write(chunk)
                     filelist.append(path%i.filename)
         return filelist
-    except:
+    except Exception as e:
+        print "Could not get attachments :", issue_in.key, e
         return []
 
 @timeit
@@ -174,7 +177,7 @@ def copy_issuelinks(jira_in, jira_out, issue_in):
     """
     for i in issue_in.fields.issuelinks:
         try:
-            jira_out.create_issue_link(i.type.name, jira_in.issue_link(i.id).inwardIssue.key, 
+            jira_out.create_issue_link(linktype_map[i.type.name], jira_in.issue_link(i.id).inwardIssue.key, 
                                                     jira_in.issue_link(i.id).outwardIssue.key)
         except Exception as e:
             print "Link issue not copyied :", jira_in.issue_link(i.id).inwardIssue.key, \
@@ -187,12 +190,34 @@ def copy_issuestatus(jira_in, jira_out, issue_in):
         the copy status will refer to the jira_out status and will be mapped only open closed.
         This can be iterated per each issue
     """
-    if hasattr(issue_status, issue_in.fields.status.name.lower()):
-        for t in issue_status[issue_in.fields.status.name.lower()]:
-            issue_out = jira_out.issue(issue_in.key)
-            jira_out.transition_issue(issue_out,t)
-    else:
-        print "Status not in map       :", issue_in.fields.status.name
+    try:
+        if issue_in.fields.status.name.lower() in issue_status:
+            for t in issue_status[issue_in.fields.status.name.lower()]:
+                issue_out = jira_out.issue(issue_in.key)
+                jira_out.transition_issue(issue_out,t)
+        else:
+            print "Status not in map       :", issue_in.fields.status.name
+    except Exception as e:
+        print "Cannot change issue status :", e
+
+
+@timeit
+def copy_issueattribs(jira_in, jira_out, issues_in):
+    """ This method is used to copy issue attributes, comments, attachments
+        issuestatus and issuelinks.
+    """
+
+    for i in issues_in:
+
+        i_old = jira_in.issue(i.key)
+        i_new = jira_out.issue(i_old.key)  
+        print "Copy issue attributes:", i_old.key
+
+        copy_comments(jira_out, i_old, i_new)
+        copy_attachment(jira_in, jira_out, i_old)
+        copy_issuelinks(jira_in, jira_out, i_old)
+        copy_issuestatus(jira_in, jira_out, i_old)
+
 
 def jconnect(jira_param):
     """ This is the methos used as jira connector """
@@ -212,7 +237,7 @@ def jissue_get_last(j_old, project_old):
     return j_issue_max_key
 
 @timeit
-def jissue_get_chunked(jira, project, issue_max_count, chunks=100):
+def jissue_get_chunked(jira_in, project, issue_max_count, chunks=100):
     """ This method is used to get the issue list with references, 
         in case the number of issues is more than 1000 
     """
@@ -222,20 +247,25 @@ def jissue_get_chunked(jira, project, issue_max_count, chunks=100):
     rest = issue_max_count % chunks
     # iterate the issue gathering
     for i in range(step):
-        result.extend(jissue_query(jira, project, chunks*i, chunks))
-    result.extend(jissue_query(jira, project, issue_max_count-rest, rest))
+        result.extend(jissue_query(jira_in, project, chunks*i, chunks))
+    result.extend(jissue_query(jira_in, project, issue_max_count-rest, rest))
     return result
 
-def jissue_field_parser(issue):
+def jissue_field_parser(jira_in, issue_in):
     parsed_custom = []
     parsed_system = []
-    for f in dir(issue.fields):
-        if not f.startswith('__'):
-            if f.startswith('customfield'):
-                parsed_custom.append( ('issue.fields.%s'%str(f),eval('issue.fields.%s'%str(f))) ) 
-            else:
-                parsed_system.append( ('issue.fields.%s'%str(f),eval('issue.fields.%s'%str(f))) )
-    return parsed_system, parsed_custom
+    try:
+        issue = jira_in.issue(issue_in)
+        for f in dir(issue.fields):
+            if not f.startswith('__'):
+                if f.startswith('customfield'):
+                    parsed_custom.append( ('issue.fields.%s'%str(f),eval('issue.fields.%s'%str(f))) ) 
+                else:
+                    parsed_system.append( ('issue.fields.%s'%str(f),eval('issue.fields.%s'%str(f))) )
+        return parsed_system, parsed_custom
+    except Exception as e:
+        print "Exception occurred :", e
+        return 0, 0
 
 def seekuser(issue, jira, project):
     try:
@@ -244,12 +274,12 @@ def seekuser(issue, jira, project):
     except:
         return []
 
-# this are the helper method to move/map remap the data 
-def assignee(issue, jira, project):
-    if seekuser(issue, jira, project):
-        username = seekuser(issue, jira, project)[0].key 
+# this are the helper methods to move/map remap the data 
+def assignee(issue, jira_out, project):
+    if seekuser(issue, jira_out, project):
+        username = seekuser(issue, jira_out, project)[0].key 
     else: 
-        username = j_new.project(project).lead.key
+        username = jira_out.project(project).lead.key
     return {'name':str(username)}
                   
 def description(issue):
@@ -305,11 +335,11 @@ def project(issue):
     project = issue.fields.project.key
     return {'key' : str(project)}
    
-def reporter(issue, jira, project):
-    if seekuser(issue, jira, project):
-        reporter = seekuser(issue, jira, project)[0].key 
+def reporter(issue, jira_out, project):
+    if seekuser(issue, jira_out, project):
+        reporter = seekuser(issue, jira_out, project)[0].key 
     else: 
-        reporter = j_new.project(project).lead.key   
+        reporter = jira_out.project(project).lead.key   
     return {'name':str(reporter)}
    
 def summary(issue):
@@ -363,15 +393,15 @@ issue_status =  {
     JIRA IssueLinkType: name=u'Relates', id=u'10003'>
 """
 linktype_map =  { 
-                  'Dependency'       : 'Relates',
-                  'Duplicate'        : 'Duplicate',
-                  'Fixes'            : 'Relates', 
-                  'implements'       : 'Relates',
-                  'Interdependent'   : 'Relates',
-                  'More Detail'      : 'Relates',
-                  'Related'          : 'Relates',
-                  'Reopened'         : 'Relates' 
-                }             
+                  'Dependency'        : 'Relates',
+                  'Duplicate'         : 'Duplicate',
+                  'Fixes'             : 'Relates', 
+                  'implements'        : 'Relates',
+                  'Interdependent'    : 'Relates',
+                  'More Detail'       : 'Relates',
+                  'Related'           : 'Relates',
+                  'Reopened'          : 'Relates' 
+                }               
 
 issuetype_map = {
                   'Data Quality'      : 'Defect',
@@ -456,35 +486,79 @@ def jissue_field_prepare_mapped(issue, jira, proj):
     # in case the fields are empty clean it up      
     return {k:v for k,v in fields_tmp.items() if v}
 
-if __name__ == "__main__":
+# the main, combine all together, and get the needed parameters
+# from option parser
+def main():
+    usage = "usage: %prog [options] arg"
+    parser = OptionParser(usage)
+    parser.add_option("-f", "--full", dest="full",
+                      action="store_true", help="all options enabled", default=False)
+
+    parser.add_option("--cv", "--comp-version",
+                      action="store_true", dest="compvers", default=False)
+
+    parser.add_option("-a", "--attributes", help="copy issues attributes",
+                      action="store_true", dest="attributes", default=False)
+
+    parser.add_option("--di", "--disable-issues", help="copy issues",
+                      action="store_false", dest="issues", default=True)
+
+    parser.add_option("-s", "--start", dest="start", default=0, type="int", 
+                      help="issue to start copy from")
+
+    parser.add_option("-z", "--analyze",  dest="analyze", type="string",
+                      help="issue customfield analyze")
+
+    (options, args) = parser.parse_args()
+    # check if the correct number of argument has been given to the
+    # commandline
+    if len(args) != 1:
+        parser.error("incorrect number of arguments")
 
     # first stage issue creation in project from project reference.
-    
     # connect to the old jira server parameters
     j_old_param = (secret_old['server'], secret_old['user'], secret_old['pass'])
     # connect to the new jira and create the issues with empty dummy values
     j_new_param = (secret_new['server'], secret_new['user'], secret_new['pass'])
 
     # the project name shall be given as external parameter
-    j_project = "DES"
+    j_project = args[0]
     # perform jira connection
     j_old = jconnect(j_old_param)
     # perform jira connection
     j_new = jconnect(j_new_param)
 
-    # precondition prepare the versions and the components if any copy from old to new
-    proj_versions   = copy_versions(j_old, j_new, j_project)
-    proj_componente = copy_components(j_old, j_new, j_project)
-    issues_old, issues_new, not_issues  = copy_issues(j_old, j_new, j_project, start=0)
-    
-    # iterate along the issues in the old project and copy comments attachment and change status in the
-    # new jira issues
-    for i_old in issues_old:
-        print "Copy issue attributes:", i_old.key
-        i_new = j_new.issue(i_old.key)  
+    print "JIRA IN SERVER CONNECTED"
+    pprint.pprint(j_old.server_info(), indent=3)
 
-        copy_comments(j_new, i_old, i_new)
-        copy_attachment(j_old, j_new, i_old)
-        copy_issuestatus(j_old, j_new, i_old)
+    print "JIRA OUT SERVER CONNECTED"
+    pprint.pprint(j_new.server_info(), indent=3)
+
+    if options.full or options.compvers:
+        # precondition prepare the versions and the components if any copy from old to new
+        proj_versions   = copy_versions(j_old, j_new, j_project)
+        proj_componente = copy_components(j_old, j_new, j_project)
+
+    if options.full or options.issues:
+        # iterate along the issues and copy the issues to the new jira
+        issues_old, issues_new, not_issues  = copy_issues(j_old, j_new, j_project, options.start)
     
-    print "Copy operation terminated, exit"
+    if options.full or options.attributes:
+        # iterate along the issues in the old project and copy comments attachment links and change 
+        # the issues status in the new jira
+        copy_issueattribs(j_old, j_new, issues_old)
+
+    if options.analyze:
+        # this helps the user to understand which fields are availables in the wished issue.
+        result = jissue_field_parser(j_old, options.analyze)
+        # print the SYSTEM FIELDS
+        print "SYSTEM FIELDS"
+        pprint.pprint(result[0], indent=3)
+        # print the CUSTOM FIELDS
+        print "CUSTOM FIELDS"
+        pprint.pprint(result[1], indent=3)
+        
+        print "Copy operation terminated, exit"
+
+if __name__ == "__main__":
+    main()
